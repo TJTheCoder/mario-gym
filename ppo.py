@@ -1,15 +1,12 @@
 import os
-import json
-import gymnasium as gym
-import retro
 import numpy as np
 import matplotlib.pyplot as plt
+import retro
+import gymnasium as gym
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback
-
-from gym_retro.retro_wrapper import RetroArcade
 
 LOG_DIR = "./ppo_logs/Mario/"
 REWARD_TXT_PATH = os.path.join(LOG_DIR, "ppo_rewards.txt")
@@ -17,11 +14,7 @@ GRAPH_IMG_PATH = os.path.join(LOG_DIR, "ppo_reward_curve.png")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
-GAME_START_DICT = {
-    "SuperMarioBros-Nes": ["Level1-1"]
-}
-
-# Callback to save rewards and update graph
+# Callback to log and plot rewards
 class RewardLoggerCallback(BaseCallback):
     def __init__(self, check_freq: int = 1000, verbose: int = 1):
         super().__init__(verbose)
@@ -55,13 +48,16 @@ class RewardLoggerCallback(BaseCallback):
         plt.savefig(GRAPH_IMG_PATH)
         plt.close()
 
+def make_env():
+    env = retro.make(game="SuperMarioBros-Nes", state="Level1-1")
+    return env
+
 if __name__ == "__main__":
-    env = RetroArcade(game_start_dict=GAME_START_DICT, use_discrete_actions=True)
+    env = make_env()
     env = Monitor(env, LOG_DIR)
 
     model = PPO("CnnPolicy", env, verbose=1, tensorboard_log=LOG_DIR)
     callback = RewardLoggerCallback(check_freq=1000)
 
-    model.learn(total_timesteps=10_000_000, callback=callback)
-
+    model.learn(total_timesteps=1_000_000, callback=callback)
     env.close()
