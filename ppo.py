@@ -1,63 +1,98 @@
-import os
-import numpy as np
-import matplotlib.pyplot as plt
 import retro
-import gymnasium as gym
-
+import numpy as np
+import torch
+import os
+import time
 from stable_baselines3 import PPO
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import DummyVecEnv
 
-LOG_DIR = "./ppo_logs/Mario/"
-REWARD_TXT_PATH = os.path.join(LOG_DIR, "ppo_rewards.txt")
-GRAPH_IMG_PATH = os.path.join(LOG_DIR, "ppo_reward_curve.png")
+# Global variable to track if environment is already created
+env_created = False
 
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# Callback to log and plot rewards
-class RewardLoggerCallback(BaseCallback):
-    def __init__(self, check_freq: int = 1000, verbose: int = 1):
-        super().__init__(verbose)
-        self.check_freq = check_freq
-        self.rewards = []
-
-    def _on_step(self) -> bool:
-        if self.locals.get("infos"):
-            for info in self.locals["infos"]:
-                if "episode" in info:
-                    reward = info["episode"]["r"]
-                    self.rewards.append(reward)
-                    with open(REWARD_TXT_PATH, "a") as f:
-                        f.write(f"{reward}\n")
-                    self._plot_rewards()
-        return True
-
-    def _plot_rewards(self):
-        if len(self.rewards) < 10:
-            return
-        smoothed = np.convolve(self.rewards, np.ones(50)/50, mode="valid")
-        x_vals = np.arange(len(smoothed))
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(x_vals, smoothed)
-        plt.xlabel("Episode")
-        plt.ylabel("Smoothed Reward")
-        plt.title("PPO Training Curve - SuperMarioBros-Nes Level1-1")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(GRAPH_IMG_PATH)
-        plt.close()
-
+# Custom environment factory function
 def make_env():
-    env = retro.make(game="SuperMarioBros-Nes", state="Level1-1")
-    return env
+    global env_created
+    if env_created:
+        raise ValueError("Environment already created. Close it first.")
+    env_created = True
+    return retro.make(game="SuperMarioBros-Nes", state="Level1-1")
 
-if __name__ == "__main__":
-    env = make_env()
-    env = Monitor(env, LOG_DIR)
+# Parameters
+total_timesteps = 10_000_000  # Change this as needed
+save_every = 10_000  # Save data every N frames
 
-    model = PPO("CnnPolicy", env, verbose=1, tensorboard_log=LOG_DIR)
-    callback = RewardLoggerCallback(check_freq=1000)
+# Output files
+os.makedirs("ppo_output", exist_ok=True)
+rewards_file = open("ppo_output/rewards.txt", "w")
+averages_file = open("ppo_output/averages.txt", "w")
 
-    model.learn(total_timesteps=1_000_000, callback=callback)
-    env.close()
+# Buffers
+rewards_buffer = []
+average_buffer = []
+
+# Create a single environment
+env = retro.make(game="SuperMarioBros-Nes", state="Level1-1")
+
+# Wrap in DummyVecEnv
+vec_env = DummyVecEnv([lambda: env])
+
+# Create PPO model
+model = PPO("CnnPolicy", vec_env, verbose=1, device="auto")
+
+# Train and collect data
+n_steps = 0
+start_time = time.time()
+
+try:
+    while n_steps < total_timesteps:
+        model.learn(total_timesteps=save_every, reset_num_timesteps=False)
+        
+        # Evaluate policy
+        obs = vec_env.reset()
+        done = False
+        total_reward = 0
+        
+        # Run one episode for evaluation
+        while not done:
+            action, _states = model.predict(obs)
+            obs, rewards, dones, infos = vec_env.step(action)
+            total_reward += rewards[0]
+            done = dones[0]
+        
+        # Save total return
+        rewards_buffer.append(total_reward)
+        
+        # Calculate moving average (last 10 episodes or all if less than 10)
+        moving_avg = np.mean(rewards_buffer[-10:])
+        average_buffer.append(moving_avg)
+
+        # Write to files
+        rewards_file.write(f"{total_reward}\n")
+        rewards_file.flush()
+        averages_file.write(f"{moving_avg}\n")
+        averages_file.flush()
+
+        # Update step count
+        n_steps += save_every
+        
+        # Calculate elapsed time
+        elapsed_time = time.time() - start_time
+        
+        # Print progress
+        print(f"Step: {n_steps}/{total_timesteps} | Reward: {total_reward:.2f} | Moving Avg: {moving_avg:.2f} | Time: {elapsed_time:.1f}s")
+
+        # Occasionally save the model
+        if n_steps % 100000 == 0:
+            model.save(f"ppo_output/mario_model_{n_steps}")
+
+    # Final save
+    model.save("ppo_output/mario_model_final")
+    
+    print("Training complete!")
+    print(f"Final average reward (last 10 episodes): {moving_avg:.2f}")
+
+finally:
+    # Ensure cleanup happens even if there's an error
+    rewards_file.close()
+    averages_file.close()
+    vec_env.close()
